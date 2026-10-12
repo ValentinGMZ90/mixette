@@ -365,6 +365,7 @@ details[open] summary { margin-bottom: 6px; }
     <b id="busyTitle">Analyse en cours</b>
     <div class="bar"><i id="busyBar"></i></div>
     <small id="busyDetail"></small>
+    <button class="btn sm" id="busyCancel" hidden>Arrêter après cette piste</button>
   </div>
 </div>
 <div class="modal" id="editor" hidden></div>
@@ -1247,7 +1248,7 @@ var S = {
   ab: 'after', playing: false, t0: 0, off: 0, loop: null, sources: [],
   sel: null, dl: null, master: null, rev: null, scratch: null, projName: ''
 };
-var VERSION = '2.0';
+var VERSION = '2.1';
 function defSc() { return { on: false, source: -1, depth: 8, sens: -16, attack: 0.002, release: 0.16 }; }
 var SC_PRESETS = [
   { id: 'light', label: 'Léger', hint: 'presque invisible, grave plus net', v: { depth: 4, sens: -14, attack: 0.003, release: 0.09 } },
@@ -1344,13 +1345,18 @@ function makeReverbIR(ctx) {
   return ir;
 }
 // Construit la chaîne complète dans un contexte (lecture ou rendu)
-function buildGraph(ctx, nTracks, useWorklet, withMaster) {
+// `active` (facultatif) : seules ces pistes sont construites — le rendu d'une piste seule ne calcule pas les autres.
+// `noReverb` : pas de réverb du tout (évite de calculer une convolution sur du silence).
+function buildGraph(ctx, nTracks, useWorklet, withMaster, active, noReverb) {
   var g = { tracks: [], master: null };
-  var mIn = ctx.createGain();
-  var rev = ctx.createConvolver(); rev.normalize = true; rev.buffer = (ctx === S.ctx && S.revIR) ? S.revIR : makeReverbIR(ctx);
-  if (ctx === S.ctx) S.revIR = rev.buffer;
-  rev.connect(mIn);
+  var mIn = ctx.createGain(), rev = null;
+  if (!noReverb) {
+    rev = ctx.createConvolver(); rev.normalize = true; rev.buffer = (ctx === S.ctx && S.revIR) ? S.revIR : makeReverbIR(ctx);
+    if (ctx === S.ctx) S.revIR = rev.buffer;
+    rev.connect(mIn);
+  }
   for (var i = 0; i < nTracks; i++) {
+    if (active && !active[i]) { g.tracks.push(null); continue; }
     var n = { in: ctx.createGain() };
     n.eq = makeEqChain(ctx); n.comp = makeComp(ctx, useWorklet);
     n.fader = ctx.createGain(); n.pan = ctx.createStereoPanner(); n.send = ctx.createGain(); n.send.gain.value = 0;
@@ -1363,7 +1369,7 @@ function buildGraph(ctx, nTracks, useWorklet, withMaster) {
     } else { n.duck = ctx.createGain(); }
     n.duckIsWorklet = !!useWorklet;
     n.in.connect(n.eq.input); n.eq.output.connect(n.comp.input); n.comp.output.connect(n.duck, 0, 0); n.duck.connect(n.fader);
-    n.fader.connect(n.pan); n.pan.connect(mIn); n.pan.connect(n.an); n.fader.connect(n.send); n.send.connect(rev);
+    n.fader.connect(n.pan); n.pan.connect(mIn); n.pan.connect(n.an); n.fader.connect(n.send); if (rev) n.send.connect(rev);
     g.tracks.push(n);
   }
   var m = { in: mIn, eq: makeEqChain(ctx), gain: ctx.createGain(), lim: makeLim(ctx, useWorklet), an: ctx.createAnalyser() };
@@ -1378,6 +1384,7 @@ function applyToGraph(ctx, g, params, smooth) {
   var t = ctx.currentTime, anySolo = params.tracks.some(function (p) { return p.solo; });
   function set(param, v) { if (smooth) param.setTargetAtTime(v, t, 0.015); else param.setValueAtTime(v, t); }
   g.tracks.forEach(function (n, i) {
+    if (!n) return;
     var p = params.tracks[i];
     setEq(ctx, n.eq, p, smooth);
     n.comp.set(p.comp);
@@ -1387,6 +1394,7 @@ function applyToGraph(ctx, g, params, smooth) {
     if (n.duckIsWorklet) {
       // le déclencheur est pris avant son fader : bouger le volume du kick ne change pas le sidechain
       var src = scSource(params, i);
+      if (src >= 0 && !g.tracks[src]) src = -1;
       if (src !== n.keyFrom) {
         if (n.keyFrom >= 0) { try { g.tracks[n.keyFrom].comp.output.disconnect(n.duck, 0, 1); } catch (e) {} }
         if (src >= 0) g.tracks[src].comp.output.connect(n.duck, 0, 1);
@@ -1601,24 +1609,34 @@ async function runAnalysis(processed) {
 }
 
 /* Rendu hors ligne : indices de pistes (ou toutes), avec ou sans traitement du master */
-async function renderOffline(params, only, withMaster, tailSec) {
+// onProgress(fraction) est appelé pendant le calcul, pour une barre qui avance vraiment
+async function renderOffline(params, only, withMaster, tailSec, onProgress) {
   var tail = tailSec != null ? tailSec : (withMaster ? 0.3 : 0);
   var len = Math.ceil(S.dur * S.sr) + Math.round(S.sr * tail);
   var O = new OfflineAudioContext(2, len, S.sr), useW = false;
   if (S.worklet) useW = await loadWorklet(O);
-  var g = buildGraph(O, S.tracks.length, useW, withMaster);
   var p = clone(params);
   // les pistes qui déclenchent un sidechain doivent jouer (muettes) pour que la baisse ait lieu
-  var play = only ? only.slice() : null;
+  var play = only ? only.slice() : null, active = null;
   if (only) {
     only.forEach(function (i) { var s = scSource(p, i); if (s >= 0 && play.indexOf(s) < 0) play.push(s); });
     p.tracks.forEach(function (t, i) { t.solo = false; t.mute = only.indexOf(i) < 0; });
+    active = p.tracks.map(function (t, i) { return play.indexOf(i) >= 0; });
   }
+  var anySolo = p.tracks.some(function (t) { return t.solo; });
+  var needRev = p.tracks.some(function (t, i) { return (!active || active[i]) && !t.mute && (!anySolo || t.solo) && t.reverb > 0.004; });
+  var g = buildGraph(O, S.tracks.length, useW, withMaster, active, !needRev);
   applyToGraph(O, g, p, false);
   S.tracks.forEach(function (tr, i) {
     if (play && play.indexOf(i) < 0) return;
     var s = O.createBufferSource(); s.buffer = tr.buffer; s.connect(g.tracks[i].in); s.start(0);
   });
+  if (onProgress) {
+    var total = len / S.sr;
+    for (var k = 1; k < 20; k++) (function (f) {
+      O.suspend(total * f).then(function () { onProgress(f); O.resume(); }).catch(function () {});
+    })(k / 20);
+  }
   return await O.startRendering();
 }
 
@@ -2280,9 +2298,11 @@ function encodeWav24(buf) {
   v.setUint32(o, sr * nc * bps, true); o += 4; v.setUint16(o, nc * bps, true); o += 2; v.setUint16(o, 24, true); o += 2;
   str('data'); v.setUint32(o, data, true); o += 4;
   var chs = []; for (var c = 0; c < nc; c++) chs.push(buf.getChannelData(c));
+  var u8 = new Uint8Array(ab);
   for (var i = 0; i < len; i++) for (c = 0; c < nc; c++) {
-    var s = Math.round(clamp(chs[c][i], -1, 1) * 8388607);
-    v.setUint8(o, s & 255); v.setUint8(o + 1, (s >> 8) & 255); v.setUint8(o + 2, (s >> 16) & 255); o += 3;
+    var x = chs[c][i]; x = x > 1 ? 1 : x < -1 ? -1 : x;
+    var s = Math.round(x * 8388607);
+    u8[o] = s & 255; u8[o + 1] = (s >> 8) & 255; u8[o + 2] = (s >> 16) & 255; o += 3;
   }
   return ab;
 }
@@ -2324,9 +2344,13 @@ async function saveFile(name, data, mime) {
 }
 async function exportWav() {
   closeMenu(); pause();
-  busy('Rendu du mix', 0.2, 'Calcul de tous les réglages sur le morceau entier');
+  busy('Rendu du mix', 0, 'Calcul de tous les réglages sur le morceau entier');
+  var t0 = performance.now();
   try {
-    var buf = await renderOffline(S.committed, null, true);
+    var buf = await renderOffline(S.committed, null, true, null, function (f) {
+      var el = (performance.now() - t0) / 1000;
+      busy(null, f * 0.85, 'Calcul du mix' + (f > 0.05 ? ' · encore ' + fmtDur(el / f * (1 - f)) + ' environ' : ''));
+    });
     busy(null, 0.85, 'Écriture du fichier WAV');
     await sleep(20);
     var wav = encodeWav24(buf);
@@ -2388,24 +2412,37 @@ async function exportStems(indices) {
     try { dir = await window.showDirectoryPicker({ id: 'mixette-pistes', mode: 'readwrite', startIn: 'music' }); }
     catch (e) { if (e && e.name === 'AbortError') { toast('Export annulé'); return; } dir = null; }
   }
-  var zip = [];
+  var zip = [], n = indices.length, t0 = performance.now(), written = 0;
+  S.cancelExport = false; showCancel(true);
   try {
-    for (var k = 0; k < indices.length; k++) {
+    for (var k = 0; k < n; k++) {
+      if (S.cancelExport) break;
       var i = indices[k];
-      busy('Export des pistes', k / indices.length, 'Rendu : ' + S.tracks[i].label + ' (' + (k + 1) + '/' + indices.length + ')');
-      var buf = await renderOffline(S.committed, [i], false, 0.5);
-      busy(null, (k + 0.7) / indices.length, 'Écriture : ' + names[k]);
-      await sleep(10);
-      var wav = encodeWav24(buf);
-      if (dir) { var fh = await dir.getFileHandle(names[k], { create: true }), ws = await fh.createWritable(); await ws.write(wav); await ws.close(); }
-      else if (indices.length === 1) { busy(null); await saveFile(names[k].replace(/\.wav$/, '') + ' (Mixette).wav', wav, 'audio/wav'); return; }
+      var upd = (function (k, label) {
+        return function (f) {
+          var frac = (k + f * 0.85) / n, el = (performance.now() - t0) / 1000, eta = frac > 0.03 ? el / frac * (1 - frac) : null;
+          busy(null, frac, 'Piste ' + (k + 1) + ' sur ' + n + ' : ' + label + (eta != null ? ' · encore ' + fmtDur(eta) + ' environ' : ''));
+        };
+      })(k, S.tracks[i].label);
+      busy(n > 1 ? 'Export des pistes' : 'Export de la piste', null, null); upd(0);
+      var buf = await renderOffline(S.committed, [i], false, 0.5, upd);
+      upd(0.95); await sleep(10);
+      var wav = encodeWav24(buf); buf = null;
+      if (dir) { var fh = await dir.getFileHandle(names[k], { create: true }), ws = await fh.createWritable(); await ws.write(wav); await ws.close(); written++; }
+      else if (n === 1) { busy(null); showCancel(false); await saveFile(names[k].replace(/\.wav$/, '') + ' (Mixette).wav', wav, 'audio/wav'); return; }
       else zip.push({ name: names[k], data: new Uint8Array(wav) });
     }
-    busy(null);
-    if (dir) toast(indices.length + ' pistes enregistrées dans le dossier « ' + dir.name + ' »');
-    else { busy('Export des pistes', 1, 'Création du fichier .zip'); await sleep(10); var z = makeZip(zip); busy(null); await saveFile('Pistes Mixette ' + stamp() + '.zip', z, 'application/zip'); }
-  } catch (e) { busy(null); toast('Export impossible : ' + (e && e.message || e)); }
+    busy(null); showCancel(false);
+    if (S.cancelExport) {
+      toast(dir ? 'Export arrêté : ' + written + ' piste' + (written > 1 ? 's' : '') + ' déjà enregistrée' + (written > 1 ? 's' : '') + ' dans « ' + dir.name + ' »' : 'Export annulé');
+      return;
+    }
+    if (dir) toast(n + ' pistes enregistrées dans le dossier « ' + dir.name + ' » (' + fmtDur((performance.now() - t0) / 1000) + ')');
+    else { busy('Export des pistes', 1, 'Création du fichier .zip'); await sleep(10); var z = makeZip(zip); zip = null; busy(null); await saveFile('Pistes Mixette ' + stamp() + '.zip', z, 'application/zip'); }
+  } catch (e) { busy(null); showCancel(false); toast('Export impossible : ' + (e && e.message || e)); }
 }
+function fmtDur(s) { s = Math.max(1, Math.round(s)); if (s < 60) return s + ' s'; var m = Math.floor(s / 60), r = s % 60; return m + ' min' + (r >= 5 ? ' ' + (r < 10 ? '0' : '') + r + ' s' : ''); }
+function showCancel(on) { var b = $('busyCancel'); b.hidden = !on; b.disabled = false; b.textContent = 'Arrêter après cette piste'; }
 function sheetText() {
   var L = [], p = S.committed;
   L.push('MIXETTE · FICHE DE RÉGLAGES', 'Projet : ' + (S.projName || ''), 'Date : ' + new Date().toLocaleDateString('fr-FR'), '');
@@ -2516,6 +2553,7 @@ $('btnExport').onclick = function (e) { e.stopPropagation(); var l = $('exportLi
 $('expWav').onclick = exportWav;
 $('expSheet').onclick = exportSheet;
 $('expStems').onclick = function () { exportStems(null); };
+$('busyCancel').onclick = function () { S.cancelExport = true; this.disabled = true; this.textContent = 'Arrêt après la piste en cours…'; };
 document.addEventListener('click', function (e) { if (!$('exportMenu').contains(e.target)) closeMenu(); });
 var drop = $('drop');
 ['dragenter', 'dragover'].forEach(function (ev) { window.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
