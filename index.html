@@ -60,7 +60,24 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand b { font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
-.brand .proj { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.brand .proj { color: var(--fg); background: none; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+.brand .proj:not(:disabled):hover { border-color: var(--line2); }
+.brand .proj:disabled { color: var(--mute); cursor: default; }
+.brand .rename { background: var(--sunk); border: 1px solid var(--act); border-radius: 6px; padding: 4px 8px; min-width: 200px; max-width: 280px; }
+.savest { color: var(--mute); font-size: 12.5px; white-space: nowrap; }
+.savest[data-state="saved"] { color: var(--good); }
+.savest[data-state="error"] { color: var(--sev3); }
+.projects { display: flex; flex-direction: column; gap: 12px; }
+.pj-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pj-head h2 { font-size: 20px; font-weight: 800; }
+.pj-head span { color: var(--mute); font-size: 13px; }
+.pj-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.pj { display: flex; align-items: stretch; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; min-width: 0; }
+.pj-open { flex: 1; min-width: 0; text-align: left; background: none; border: 0; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.pj-open:hover { background: var(--raise); }
+.pj-open b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-open small { color: var(--mute); font-size: 12.5px; }
+.pj .btn { align-self: center; }
 .top .grow { flex: 1; }
 .top .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .menu { position: relative; }
@@ -286,7 +303,8 @@ details[open] summary { margin-bottom: 6px; }
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 18V6M9 18V10M14 18V4M19 18v-8"/></svg>
       <b>Mixette</b>
       <span class="ver" id="ver"></span>
-      <span class="proj" id="projName"></span>
+      <button class="proj" id="projName" hidden></button>
+      <span class="savest" id="saveState" role="status" hidden></span>
     </div>
     <div class="grow"></div>
     <div class="seg" id="modeSeg" role="group" aria-label="Mode d'affichage" hidden>
@@ -294,6 +312,7 @@ details[open] summary { margin-bottom: 6px; }
       <button id="modeOverview" aria-pressed="false">Tout le projet</button>
     </div>
     <div class="actions">
+      <button class="btn" id="btnHome" hidden>Mes projets</button>
       <button class="btn" id="btnImport">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
         Importer
@@ -335,6 +354,7 @@ details[open] summary { margin-bottom: 6px; }
         <h1>Ton morceau, mixé pas à pas.</h1>
         <p>Importe les pistes de ton projet. Mixette écoute les volumes et les fréquences, repère les problèmes moment par moment, et te propose un réglage à appliquer d'un clic, avec un bouton avant/après pour juger à l'oreille.</p>
       </div>
+      <section class="projects" id="projects" aria-label="Mes projets" hidden></section>
       <div class="drop" id="drop">
         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--dim)" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
         <b style="font-size:17px">Glisse tes fichiers ici</b>
@@ -1275,7 +1295,7 @@ var S = {
   sel: null, dl: null, master: null, rev: null, scratch: null, projName: '',
   target: loadTarget(), calibrating: false
 };
-var VERSION = '2.2';
+var VERSION = '2.3';
 var TARGETS = [
   { v: -14, l: 'Streaming', h: 'comme Spotify ou YouTube après leur réglage de volume' },
   { v: -11, l: 'Standard', h: 'fort sans être écrasé' },
@@ -1536,7 +1556,7 @@ async function importFiles(files) {
   var list = [], bad = [];
   for (var i = 0; i < files.length; i++) {
     busy('Lecture des fichiers', i / files.length, files[i].name);
-    try { var ab = await files[i].arrayBuffer(); var buf = await S.ctx.decodeAudioData(ab); list.push({ name: files[i].name, buffer: buf }); }
+    try { var ab = await files[i].arrayBuffer(), keep = ab.slice(0); var buf = await S.ctx.decodeAudioData(ab); list.push({ name: files[i].name, buffer: buf, bytes: keep }); }
     catch (e) { bad.push(files[i].name); }
   }
   if (bad.length) toast('Fichier illisible : ' + bad.join(', '));
@@ -1545,9 +1565,192 @@ async function importFiles(files) {
   busy(null);
   list = await confirmEmptyTracks(list);
   if (!list) return;
-  S.projName = list.length === 1 ? baseName(list[0].name) : list.length + ' pistes';
+  await flushSave();
+  S.projName = defaultProjectName(list); S.projectId = null;
   await ensureCtx();
   await loadTracks(list);
+  createProject(list);
+}
+/* ================= Projets enregistrés =================
+   Tout reste sur l'ordinateur, dans le stockage du navigateur (IndexedDB) :
+   - « audio » : les fichiers d'origine, tels qu'importés (pas de perte de qualité)
+   - « projects » : le nom, la liste des pistes et tout l'état (réglages, conseils, étapes) */
+var DB = null;
+function idb() {
+  if (DB) return Promise.resolve(DB);
+  return new Promise(function (res, rej) {
+    if (!window.indexedDB) { rej(new Error('stockage indisponible')); return; }
+    var r = indexedDB.open('mixette', 1);
+    r.onupgradeneeded = function () { var d = r.result; if (!d.objectStoreNames.contains('projects')) d.createObjectStore('projects', { keyPath: 'id' }); if (!d.objectStoreNames.contains('audio')) d.createObjectStore('audio'); };
+    r.onsuccess = function () { DB = r.result; res(DB); };
+    r.onerror = function () { rej(r.error); };
+  });
+}
+function dbDo(store, mode, fn) {
+  return idb().then(function (db) {
+    return new Promise(function (res, rej) {
+      var t = db.transaction(store, mode), out, rq = fn(t.objectStore(store));
+      if (rq) rq.onsuccess = function () { out = rq.result; };
+      t.oncomplete = function () { res(out); };
+      t.onerror = function () { rej(t.error); };
+      t.onabort = function () { rej(t.error || new Error('annulé')); };
+    });
+  });
+}
+function defaultProjectName(list) {
+  if (list.length === 1) return baseName(list[0].name);
+  // préfixe commun des noms de fichiers (FL Studio nomme souvent « Morceau_Insert 1 », « Morceau_Insert 2 »…)
+  var names = list.map(function (x) { return baseName(x.name); }), p = names[0];
+  names.forEach(function (n) { while (p && n.indexOf(p) !== 0) p = p.slice(0, -1); });
+  p = p.replace(/[\s_\-–.]+$/, '').trim();
+  if (p.length >= 3) return p;
+  var d = new Date();
+  return 'Projet du ' + d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+var saveTimer = null, saving = null, audioReady = null;
+function setSaveState(st, detail) {
+  var el = $('saveState'); if (!el) return;
+  var txt = { saved: 'Enregistré', saving: 'Enregistrement…', audio: 'Enregistrement des sons…', error: 'Non enregistré', demo: 'Exemple (non enregistré)' }[st] || '';
+  el.textContent = txt + (detail ? ' · ' + detail : ''); el.dataset.state = st; el.hidden = !txt;
+}
+// Nouveau projet : on range les sons d'origine une seule fois, puis l'état à chaque changement
+function createProject(list) {
+  var id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  S.projectId = id; S.projectCreated = Date.now();
+  renderProjName();
+  setSaveState('audio');
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  audioReady = (async function () {
+    for (var i = 0; i < list.length; i++) {
+      var x = list[i], rec = x.bytes ? { name: x.name, bytes: x.bytes } : { name: x.name, sr: x.buffer.sampleRate, pcm: [0, 1].slice(0, x.buffer.numberOfChannels).map(function (c) { return x.buffer.getChannelData(c).slice(); }) };
+      setSaveState('audio', (i + 1) + '/' + list.length);
+      await dbDo('audio', 'readwrite', function (s) { return s.put(rec, id + ':' + i); });
+      x.bytes = null; // libère la mémoire
+    }
+  })();
+  audioReady.then(function () { return saveState(); }).catch(function (e) { saveFailed(e); });
+}
+function snapshot() {
+  return {
+    id: S.projectId, name: S.projName, created: S.projectCreated || Date.now(), updated: Date.now(), app: VERSION,
+    nTracks: S.tracks.length, duration: S.dur, trackNames: S.tracks.map(function (t) { return t.name; }),
+    state: { committed: S.committed, raw: S.raw, sugg: S.sugg, status: S.status, scoreStart: S.scoreStart, metrics: S.metrics, stale: S.stale, mode: S.mode }
+  };
+}
+async function saveState() {
+  if (!S.projectId || !S.tracks.length) return;
+  var snap = clone(snapshot());
+  setSaveState('saving');
+  try { if (audioReady) await audioReady; await dbDo('projects', 'readwrite', function (s) { return s.put(snap); }); setSaveState('saved'); }
+  catch (e) { saveFailed(e); }
+}
+function saveFailed(e) {
+  var full = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+  setSaveState('error');
+  toast(full ? 'Plus assez de place pour enregistrer ce projet. Supprime d\'anciens projets dans « Mes projets ».' : 'Le projet n\'a pas pu être enregistré : ' + (e && e.message || e));
+}
+function scheduleSave() {
+  if (!S.projectId) return;
+  setSaveState('saving');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(function () { saveTimer = null; saving = saveState(); }, 800);
+}
+async function flushSave() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveState(); }
+  else if (saving) { try { await saving; } catch (e) {} }
+}
+async function listProjects() {
+  var all = await dbDo('projects', 'readonly', function (s) { return s.getAll(); });
+  return (all || []).sort(function (a, b) { return b.updated - a.updated; });
+}
+async function deleteProject(p) {
+  for (var i = 0; i < p.nTracks; i++) { var k = p.id + ':' + i; await dbDo('audio', 'readwrite', function (s) { return s.delete(k); }); }
+  await dbDo('projects', 'readwrite', function (s) { return s.delete(p.id); });
+}
+async function openProject(id) {
+  await flushSave();
+  var p = await dbDo('projects', 'readonly', function (s) { return s.get(id); });
+  if (!p) { toast('Projet introuvable'); return; }
+  await ensureCtx(); pause();
+  var list = [];
+  try {
+    for (var i = 0; i < p.nTracks; i++) {
+      busy('Ouverture de « ' + p.name + ' »', i / p.nTracks, baseName(p.trackNames[i] || ''));
+      var key = p.id + ':' + i, rec = await dbDo('audio', 'readonly', function (s) { return s.get(key); });
+      if (!rec) throw new Error('un son manque (' + (p.trackNames[i] || i) + ')');
+      var buf;
+      if (rec.bytes) buf = await S.ctx.decodeAudioData(rec.bytes.slice(0));
+      else { buf = S.ctx.createBuffer(rec.pcm.length, rec.pcm[0].length, rec.sr); rec.pcm.forEach(function (d, c) { buf.copyToChannel(d, c); }); }
+      list.push({ name: rec.name, buffer: buf });
+    }
+  } catch (e) { busy(null); toast('Impossible d\'ouvrir ce projet : ' + (e && e.message || e)); return; }
+  busy(null);
+  S.projectId = p.id; S.projectCreated = p.created; S.projName = p.name; audioReady = null;
+  await loadTracks(list, p.state);
+  setSaveState('saved');
+  toast('Projet rouvert là où tu t\'étais arrêté');
+}
+function renderProjName() {
+  var b = $('projName');
+  b.textContent = S.projName || '';
+  b.hidden = !S.tracks.length;
+  b.title = S.projectId ? 'Renommer le projet' : '';
+  b.disabled = !S.projectId;
+}
+function startRename() {
+  if (!S.projectId) return;
+  var b = $('projName'), inp = document.createElement('input');
+  inp.className = 'rename'; inp.value = S.projName; inp.setAttribute('aria-label', 'Nom du projet'); inp.maxLength = 80;
+  b.hidden = true; b.parentNode.insertBefore(inp, b.nextSibling); inp.focus(); inp.select();
+  var done = false;
+  function commit(save) {
+    if (done) return; done = true;
+    var v = inp.value.trim(); inp.remove();
+    if (save && v && v !== S.projName) { S.projName = v; scheduleSave(); }
+    renderProjName();
+  }
+  inp.onkeydown = function (e) { if (e.key === 'Enter') commit(true); if (e.key === 'Escape') { e.stopPropagation(); commit(false); } };
+  inp.onblur = function () { commit(true); };
+}
+function fmtSize(b) { return b > 1e9 ? fr(b / 1e9) + ' Go' : Math.max(1, Math.round(b / 1e6)) + ' Mo'; }
+function fmtWhen(t) {
+  var d = new Date(t), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  var hm = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return 'aujourd\'hui à ' + hm;
+  if (d.toDateString() === y.toDateString()) return 'hier à ' + hm;
+  return 'le ' + d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + ' à ' + hm;
+}
+async function renderProjects() {
+  var box = $('projects');
+  var list = [];
+  try { list = await listProjects(); } catch (e) { box.hidden = true; return; }
+  if (!list.length) { box.hidden = true; box.innerHTML = ''; return; }
+  var est = null; try { if (navigator.storage && navigator.storage.estimate) est = await navigator.storage.estimate(); } catch (e) {}
+  box.hidden = false;
+  box.innerHTML = '<div class="pj-head"><h2>Mes projets</h2>' + (est && est.usage ? '<span>' + fmtSize(est.usage) + ' utilisés sur cet ordinateur</span>' : '') + '</div>' +
+    '<div class="pj-list">' + list.map(function (p) {
+      var done = p.state && p.state.sugg ? p.state.sugg.filter(function (s) { return p.state.status && p.state.status[s.id]; }).length : 0, tot = p.state && p.state.sugg ? p.state.sugg.length : 0;
+      return '<div class="pj"><button class="pj-open" data-open="' + p.id + '"><b>' + esc(p.name) + '</b><small>' + p.nTracks + ' piste' + (p.nTracks > 1 ? 's' : '') + ' · ' + fmtT(p.duration || 0) + (tot ? ' · ' + done + '/' + tot + ' conseils traités' : '') + '</small><small>Modifié ' + fmtWhen(p.updated) + '</small></button>' +
+        '<button class="btn sm ghost" data-del="' + p.id + '" aria-label="Supprimer ' + esc(p.name) + '">Supprimer</button></div>';
+    }).join('') + '</div>';
+  box.querySelectorAll('[data-open]').forEach(function (b) { b.onclick = function () { openProject(b.dataset.open); }; });
+  box.querySelectorAll('[data-del]').forEach(function (b) {
+    b.onclick = async function () {
+      var p = list.find(function (x) { return x.id === b.dataset.del; });
+      var ok = await chooseDialog({ title: 'Supprimer « ' + p.name + ' » ?', text: 'Le projet et ses sons enregistrés dans Mixette seront supprimés. Tes fichiers d\'origine sur l\'ordinateur ne sont pas touchés.', items: [], ok: function () { return 'Supprimer le projet'; }, allowNone: true, cancel: 'Garder' });
+      if (!ok) return;
+      try { await deleteProject(p); toast('Projet supprimé'); } catch (e) { toast('Suppression impossible : ' + (e && e.message || e)); }
+      if (S.projectId === p.id) { S.projectId = null; setSaveState(''); }
+      renderProjects();
+    };
+  });
+}
+async function goHome() {
+  pause(); closeEditor(); closeMenu();
+  await flushSave();
+  S.tracks = []; S.projectId = null; S.sugg = []; S.metrics = null; audioReady = null;
+  setSaveState(''); $('projName').hidden = true;
+  show(); renderProjects();
 }
 function bufferPeakDb(buf) {
   var pk = 0;
@@ -1579,7 +1782,7 @@ async function confirmEmptyTracks(list) {
   if (remove.length) toast(remove.length + (remove.length > 1 ? ' pistes retirées' : ' piste retirée'));
   return list.filter(function (x, i) { return remove.indexOf(i) < 0; });
 }
-async function loadTracks(list) {
+async function loadTracks(list, restore) {
   pause(); S.off = 0; S.loop = null;
   S.tracks = list.map(function (x, i) {
     return { name: x.name, label: baseName(x.name), buffer: x.buffer, color: COLORS[i % COLORS.length], role: list.length === 1 ? 'mix' : MA.guessRole(x.name), peaks: computePeaks(x.buffer) };
@@ -1590,11 +1793,25 @@ async function loadTracks(list) {
   S.graph = buildGraph(S.ctx, S.tracks.length, S.worklet, true);
   S.raw = defParams(S.tracks.length); S.committed = defParams(S.tracks.length); S.history = []; S.status = {}; S.sugg = []; S.sel = null;
   S.preview = null; S.previewFor = null; S.ab = 'after';
-  applyToGraph(S.ctx, S.graph, S.committed, false);
-  $('projName').textContent = S.projName ? '· ' + S.projName : '';
-  await runAnalysis(false);
-  S.scoreStart = MA.score(S.sugg);
-  S.mode = 'guided'; S.gi = 0;
+  $('btnUndo').disabled = true;
+  if (restore) {
+    // projet rouvert : on reprend tout tel quel, sans refaire l'analyse
+    S.committed = restore.committed; S.raw = restore.raw || defParams(S.tracks.length);
+    S.committed.tracks.forEach(function (t) { if (!t.sc) t.sc = defSc(); });
+    if (!S.committed.master.space) S.committed.master.space = { on: false, amount: 0.6 };
+    S.sugg = restore.sugg || []; S.status = restore.status || {};
+    S.scoreStart = restore.scoreStart != null ? restore.scoreStart : MA.score(S.sugg);
+    S.metrics = restore.metrics || null; S.stale = !!restore.stale;
+    applyToGraph(S.ctx, S.graph, S.committed, false);
+    S.mode = restore.mode === 'overview' ? 'overview' : 'guided';
+  } else {
+    applyToGraph(S.ctx, S.graph, S.committed, false);
+    await runAnalysis(false);
+    S.scoreStart = MA.score(S.sugg);
+    S.mode = 'guided';
+  }
+  S.gi = 0;
+  renderProjName();
   show();
 }
 function computePeaks(buf) {
@@ -1686,6 +1903,7 @@ async function runAnalysis(processed) {
   S.sugg = keep.concat(fresh).sort(function (a, b) { return a.order - b.order; });
   S.stale = false;
   busy(null);
+  scheduleSave();
 }
 
 /* Rendu hors ligne : indices de pistes (ou toutes), avec ou sans traitement du master */
@@ -1763,7 +1981,7 @@ async function calibrateStep(s) {
   } catch (e) { toast('Mesure impossible : ' + (e && e.message || e)); s.calibrated = S.target; }
   busy(null); S.calibrating = false;
   if (S.previewFor === s.id) { S.previewFor = null; }
-  render();
+  render(); scheduleSave();
 }
 // depuis l'éditeur du master : règle directement le limiteur
 async function autoLoudness() {
@@ -1868,13 +2086,13 @@ function curveTarget(s) {
 }
 function pending() { return S.sugg.filter(function (s) { return !S.status[s.id]; }); }
 function currentScore() { return MA.score(S.sugg.filter(function (s) { return S.status[s.id] !== 'applied'; })); }
-function pushHistory() { S.history.push({ p: clone(S.committed), st: clone(S.status) }); if (S.history.length > 60) S.history.shift(); $('btnUndo').disabled = false; }
+function pushHistory() { S.history.push({ p: clone(S.committed), st: clone(S.status) }); if (S.history.length > 60) S.history.shift(); $('btnUndo').disabled = false; scheduleSave(); }
 function undo() {
   var h = S.history.pop(); if (!h) return;
   S.committed = h.p; S.status = h.st; S.stale = true;
   $('btnUndo').disabled = !S.history.length;
   if (S.mode === 'guided') { S.preview = null; S.previewFor = null; }
-  refreshAudio(); render(); toast('Dernière action annulée');
+  refreshAudio(); render(); scheduleSave(); toast('Dernière action annulée');
 }
 function markStale() { S.stale = true; updateMetrics(); }
 
@@ -1989,6 +2207,7 @@ function busy(title, frac, detail) {
 function show() {
   var loaded = S.tracks.length > 0;
   $('welcome').hidden = loaded;
+  $('btnHome').hidden = !loaded;
   $('transport').hidden = !loaded; $('modeSeg').hidden = !loaded; $('btnReanalyze').hidden = !loaded; $('exportMenu').hidden = !loaded;
   $('guided').hidden = !loaded || S.mode !== 'guided';
   $('overview').hidden = !loaded || S.mode !== 'overview';
@@ -2020,7 +2239,7 @@ function setAB(v) { S.ab = v; updateAB(); refreshAudio(); }
 function setMode(m) {
   if (m === S.mode) return;
   S.mode = m; S.preview = null; S.previewFor = null; S.ab = 'after';
-  setLoop(null); refreshAudio(); closeEditor(); show();
+  setLoop(null); refreshAudio(); closeEditor(); show(); scheduleSave();
 }
 
 /* ================= Mode guidé ================= */
@@ -2707,8 +2926,10 @@ async function makeDemo() {
     [261.6, 329.6, 392, 523.3].forEach(function (f) { var o = O.createOscillator(), og = O.createGain(); o.frequency.value = f; og.gain.value = 0.06; o.connect(og); og.connect(g); o.start(0); });
     var nz = O.createBufferSource(); nz.buffer = noiseBuf(O); var bp = O.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 380; bp.Q.value = 0.8; var ng = O.createGain(); ng.gain.value = 0.25; nz.connect(bp); bp.connect(ng); ng.connect(g); nz.start(0);
   }) });
-  S.projName = 'Exemple';
+  await flushSave();
+  S.projName = 'Exemple'; S.projectId = null;
   await loadTracks(out);
+  setSaveState('demo');
   toast('Exemple chargé. Importe tes propres pistes quand tu veux.');
 }
 
@@ -2728,6 +2949,12 @@ $('btnExport').onclick = function (e) { e.stopPropagation(); var l = $('exportLi
 $('expWav').onclick = exportWav;
 $('expSheet').onclick = exportSheet;
 $('expStems').onclick = function () { exportStems(null); };
+$('btnHome').onclick = goHome;
+$('projName').onclick = startRename;
+// on enregistre tout de suite si la fenêtre est cachée ou fermée
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && saveTimer) { clearTimeout(saveTimer); saveTimer = null; saveState(); } });
+window.addEventListener('pagehide', function () { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; saveState(); } });
+renderProjects();
 $('busyCancel').onclick = function () { S.cancelExport = true; this.disabled = true; this.textContent = 'Arrêt après la piste en cours…'; };
 document.addEventListener('click', function (e) { if (!$('exportMenu').contains(e.target)) closeMenu(); });
 var drop = $('drop');
