@@ -1,5 +1,5 @@
 /* Mixette hors ligne : les fichiers de l'app sont gardés en cache ; une nouvelle version attend que l'utilisateur clique sur « Mettre à jour ». */
-const CACHE = 'mixette-2.1-3f7944a8f1';
+const CACHE = 'mixette-2.2-b25a7d4152';
 const FILES = ["./", "index.html", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable.png"];
 const FONTS = 'mixette-fonts';
 self.addEventListener('install', (e) => {

@@ -231,6 +231,12 @@ details[open] summary { margin-bottom: 6px; }
 .presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .presets .btn { flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 8px 10px; white-space: normal; text-align: left; }
 .presets small { color: var(--mute); font-weight: 500; font-size: 11.5px; line-height: 1.3; }
+.tseg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tseg button { text-align: left; background: var(--sunk); border: 1px solid var(--line2); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-height: 44px; }
+.tseg button b { font-size: 13.5px; }
+.tseg button small { color: var(--mute); font-size: 11.5px; line-height: 1.3; }
+.tseg button[aria-pressed="true"] { border-color: var(--accent); background: #2a2214; }
+.tseg button[aria-pressed="true"] b { color: var(--accent); }
 .grm { display: grid; grid-template-columns: auto minmax(0, 1fr) 64px; gap: 10px; align-items: center; font-size: 12.5px; color: var(--dim); }
 .grm i { height: 8px; background: var(--sunk); border-radius: 4px; overflow: hidden; display: block; }
 .grm i b { display: block; height: 100%; width: 0; background: var(--accent); }
@@ -269,7 +275,7 @@ details[open] summary { margin-bottom: 6px; }
   .lane { grid-template-columns: 70px minmax(0, 1fr); }
   .metrics { margin-left: 0; }
   .ctl { grid-template-columns: 80px minmax(0, 1fr) 64px; }
-  .presets { grid-template-columns: minmax(0, 1fr); }
+  .presets, .tseg { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -645,7 +651,7 @@ details[open] summary { margin-bottom: 6px; }
   // Étapes dans l'ordre d'un vrai mixage
   var STAGES = { headroom: 1, cleanup: 2, levels: 3, lowend: 4, vocal: 5, tone: 6, dynamics: 7, space: 8, master: 9, loudness: 10 };
 
-  function suggest(trackAnalyses, sumAn) {
+  function suggest(trackAnalyses, sumAn, opts) {
     var out = [], T = trackAnalyses, nT = T.length, single = nT === 1;
     var nWin = sumAn.nWin;
     T.forEach(function (t) { if (single) t.role = 'mix'; });
@@ -1013,24 +1019,39 @@ details[open] summary { margin-bottom: 6px; }
       });
     }
 
-    // 10. Volume final
+    // 9 bis. Espace : sortir le son de la tête au casque (proposé une fois, discret)
+    var spLw = 0; for (w = 0; w < nWin; w++) if (sumAn.kDb[w] > sumAn.kDb[spLw]) spLw = w;
+    var spReg = regionAround(spLw, nWin, 8);
+    out.push({
+      id: 'space', stage: 'space', severity: 1,
+      title: 'Sortir le son de la tête',
+      short: 'Au casque, un mix stéréo semble souvent venir de l\'intérieur de la tête, ou de derrière les oreilles. Un traitement léger le place devant toi, comme de bonnes enceintes.',
+      explain: 'Avec des enceintes, chaque oreille entend un peu les deux enceintes, avec un léger retard, et la pièce renvoie des échos très courts. Au casque, tout ça disparaît : chaque côté arrive collé à une oreille, d\'où l\'impression d\'un son dans la tête. Le module Espace recrée ces indices en douceur : un peu de chaque côté passe vers l\'autre dans les graves et les médiums, de petites réflexions donnent de la profondeur, et les aigus s\'ouvrent légèrement. Sur enceintes, la différence reste discrète.',
+      fl: 'Pas d\'équivalent exact dans FL Studio. Pour s\'en approcher sur le master : Fruity Reeverb 2 en pièce très petite (Room size bas, Decay court, Wet vers 8 %), et Fruity Stereo Shaper avec un léger mélange des côtés (« L to R » et « R to L » vers 10 à 15 %).',
+      target: -1, focus: single ? [0] : live.slice(0, 3), start: spReg[0], end: spReg[1],
+      amountLabel: 'Intensité', amountUnit: '%', amountBase: 60,
+      actions: [{ t: 'space', amount: 0.6 }]
+    });
+
+    // 10. Volume final, réglé sur la cible choisie (Mixette mesure ensuite le gain exact sur le vrai mix)
+    var target = opts && opts.target != null ? opts.target : -9;
     var headroomCut = out.filter(function (s) { return s.id === 'headroom'; }).length ? out[0].amountBase : 0;
     var est = sumAn.lufs + headroomCut;
-    if (est < -15) {
-      var push = round05(clamp(-12 - est, 2, 16));
+    if (est < target - 1.5) {
+      var push = round05(clamp(target - est + 1.5, 1, 24));
       var lw = 0; for (w = 0; w < nWin; w++) if (sumAn.kDb[w] > sumAn.kDb[lw]) lw = w;
       var lreg = regionAround(lw, nWin, 10);
       out.push({
-        id: 'loudness', stage: 'loudness', severity: est < -20 ? 2 : 1,
+        id: 'loudness', stage: 'loudness', severity: est < target - 6 ? 2 : 1,
         title: 'Le morceau est trop faible',
-        short: 'Volume perçu d\'environ ' + round1(est) + ' LUFS. Les morceaux sur les plateformes tournent autour de -14 à -9 LUFS.',
-        explain: 'À côté d\'autres morceaux, celui-ci paraîtra faible. On monte le volume général avec un limiteur sur le master : il empêche le son de dépasser le maximum, donc on peut monter sans saturer. Cette étape se fait toujours en dernier.',
-        fl: 'Sur le master, ajoute Fruity Limiter : plafond (Ceil) à -1 dB, puis monte le Gain d\'environ ' + push + ' dB. Vérifie qu\'il n\'y a pas de distorsion audible.',
+        short: 'Volume perçu d\'environ ' + round1(est) + ' LUFS, pour une cible de ' + target + ' LUFS.',
+        explain: 'À côté d\'autres morceaux, celui-ci paraîtrait faible. On monte le volume général avec un limiteur sur le master : il empêche le son de dépasser le maximum, donc on peut monter sans saturer. Mixette calcule le mix complet et ajuste le limiteur jusqu\'à atteindre exactement le volume visé. Cette étape se fait toujours en dernier.',
+        fl: 'Sur le master, ajoute Fruity Limiter en dernier : plafond (Ceil) à -1 dB, puis monte le Gain de la valeur indiquée ici. Vérifie à l\'oreille qu\'il n\'y a pas de distorsion.',
         target: -1, focus: single ? [0] : live.slice(0, 3), start: lreg[0], end: lreg[1],
         amountLabel: 'Gain du limiteur', amountUnit: 'dB', amountBase: push,
         actions: [{ t: 'limiter', gainDb: push, ceiling: -1 }]
       });
-    } else if (est > -7) {
+    } else if (est > Math.max(target + 3, -7)) {
       out.push({
         id: 'loudness-hot', stage: 'loudness', severity: 1,
         title: 'Le morceau est poussé très fort',
@@ -1060,7 +1081,7 @@ details[open] summary { margin-bottom: 6px; }
   }
 
   // Tout en une fois ; onProgress(fraction, libellé)
-  function runAll(tracks, mix, onProgress) {
+  function runAll(tracks, mix, onProgress, opts) {
     var an = [];
     for (var i = 0; i < tracks.length; i++) {
       if (onProgress) onProgress(i / (tracks.length + 1), tracks[i].name);
@@ -1068,7 +1089,7 @@ details[open] summary { margin-bottom: 6px; }
     }
     if (onProgress) onProgress(tracks.length / (tracks.length + 1), 'Mix complet');
     var sum = analyzeSum(tracks, mix);
-    var sug = suggest(an, sum);
+    var sug = suggest(an, sum, opts);
     // on allège ce qui repart vers l'interface
     var light = an.map(function (a) { return { name: a.name, role: a.role, loudness: a.loudness, peakDb: a.peakDb, silent: a.silent }; });
     return { analyses: light, sum: { lufs: sum.lufs, peakDb: sum.peakDb, duration: sum.duration }, suggestions: sug };
@@ -1126,8 +1147,10 @@ class MxLim extends AudioWorkletProcessor {
     super();
     this.L = Math.max(16, Math.round(0.005 * sampleRate));
     this.buf = [new Float32Array(this.L), new Float32Array(this.L)];
-    this.need = new Float32Array(this.L).fill(1);
     this.idx = 0; this.g = 1; this.tick = 0; this.minGr = 1;
+    // minimum glissant des gains nécessaires sur la fenêtre d'anticipation (file monotone, O(1) par échantillon)
+    this.cap = this.L + 2; this.dqV = new Float32Array(this.cap); this.dqI = new Float64Array(this.cap);
+    this.head = 0; this.tail = 0; this.cnt = 0; this.n = 0;
     this.att = 1 - Math.exp(-1 / (this.L / 4));
     this.rel = Math.exp(-1 / (0.08 * sampleRate));
   }
@@ -1146,10 +1169,13 @@ class MxLim extends AudioWorkletProcessor {
       const k = this.idx;
       const dl = this.buf[0][k], dr = this.buf[1][k];
       this.buf[0][k] = xl; this.buf[1][k] = xr;
-      this.need[k] = a > ceil ? ceil / a : 1;
       this.idx = (k + 1) % L;
-      let m = 1;
-      for (let j = 0; j < L; j++) if (this.need[j] < m) m = this.need[j];
+      const v = a > ceil ? ceil / a : 1, cap = this.cap;
+      while (this.cnt > 0) { const b = (this.tail - 1 + cap) % cap; if (this.dqV[b] >= v) { this.tail = b; this.cnt--; } else break; }
+      this.dqV[this.tail] = v; this.dqI[this.tail] = this.n; this.tail = (this.tail + 1) % cap; this.cnt++;
+      while (this.dqI[this.head] <= this.n - L) { this.head = (this.head + 1) % cap; this.cnt--; }
+      this.n++;
+      const m = this.dqV[this.head];
       if (m < this.g) this.g += (m - this.g) * this.att; else this.g = this.rel * this.g + (1 - this.rel) * m;
       let ol = dl * this.g, or = dr * this.g;
       if (ol > ceil) ol = ceil; else if (ol < -ceil) ol = -ceil;
@@ -1246,9 +1272,18 @@ var S = {
   sugg: [], status: {}, scoreStart: null, metrics: null, stale: false,
   mode: 'guided', gi: 0, preview: null, previewFor: null, amount: 1,
   ab: 'after', playing: false, t0: 0, off: 0, loop: null, sources: [],
-  sel: null, dl: null, master: null, rev: null, scratch: null, projName: ''
+  sel: null, dl: null, master: null, rev: null, scratch: null, projName: '',
+  target: loadTarget(), calibrating: false
 };
-var VERSION = '2.1';
+var VERSION = '2.2';
+var TARGETS = [
+  { v: -14, l: 'Streaming', h: 'comme Spotify ou YouTube après leur réglage de volume' },
+  { v: -11, l: 'Standard', h: 'fort sans être écrasé' },
+  { v: -9, l: 'Fort', h: 'au niveau des sons qu\'on a dans son téléphone' }
+];
+function loadTarget() { try { var v = parseFloat(localStorage.getItem('mixette-target')); if (TARGETS.some(function (t) { return t.v === v; })) return v; } catch (e) {} return -9; }
+function saveTarget(v) { try { localStorage.setItem('mixette-target', String(v)); } catch (e) {} }
+function targetLabel(v) { var t = TARGETS.find(function (x) { return x.v === v; }); return t ? t.l : v + ' LUFS'; }
 function defSc() { return { on: false, source: -1, depth: 8, sens: -16, attack: 0.002, release: 0.16 }; }
 var SC_PRESETS = [
   { id: 'light', label: 'Léger', hint: 'presque invisible, grave plus net', v: { depth: 4, sens: -14, attack: 0.003, release: 0.09 } },
@@ -1258,7 +1293,7 @@ var SC_PRESETS = [
 function defTrack() { return { gainDb: 0, pan: 0, mute: false, solo: false, hpf: 0, eq: [], comp: { on: false, threshold: -20, ratio: 3, attack: 0.01, release: 0.15, makeup: 0 }, sc: defSc(), reverb: 0 }; }
 // piste qui déclenche le sidechain de la piste i (ou -1)
 function scSource(params, i) { var sc = params.tracks[i].sc; return sc && sc.on && sc.source >= 0 && sc.source !== i && sc.source < params.tracks.length ? sc.source : -1; }
-function defMaster() { return { gainDb: 0, hpf: 0, eq: [], limiter: { on: false, gainDb: 0, ceiling: -1 } }; }
+function defMaster() { return { gainDb: 0, hpf: 0, eq: [], space: { on: false, amount: 0.6 }, limiter: { on: false, gainDb: 0, ceiling: -1 } }; }
 function defParams(n) { var t = []; for (var i = 0; i < n; i++) t.push(defTrack()); return { tracks: t, master: defMaster() }; }
 
 /* ================= Audio ================= */
@@ -1332,6 +1367,48 @@ function setEq(ctx, chain, p, smooth) {
     else { set(n.gain, 0); }
   }
 }
+/* Espace (master) : fait sortir le son de la tête au casque, en restant discret sur enceintes.
+   1) crossfeed : chaque côté passe un peu vers l'autre, filtré et légèrement retardé, comme avec des enceintes
+   2) premières réflexions : quelques échos très courts, comme une petite pièce
+   3) ouverture des aigus : un peu plus de différence gauche/droite au-dessus de 1,5 kHz */
+function makeSpace(ctx) {
+  var input = ctx.createGain(), out = ctx.createGain();
+  input.channelCount = 2; input.channelCountMode = 'explicit'; input.channelInterpretation = 'speakers';
+  var split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2);
+  input.connect(split); merge.connect(out);
+  var dryL = ctx.createGain(), dryR = ctx.createGain();
+  split.connect(dryL, 0); split.connect(dryR, 1); dryL.connect(merge, 0, 0); dryR.connect(merge, 0, 1);
+  function cross(from, to) {
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 750; lp.Q.value = 0.5;
+    var d = ctx.createDelay(0.01); d.delayTime.value = 0.00028;
+    var g = ctx.createGain(); g.gain.value = 0;
+    split.connect(lp, from); lp.connect(d); d.connect(g); g.connect(merge, 0, to); return g;
+  }
+  var xLR = cross(0, 1), xRL = cross(1, 0);
+  var sL = ctx.createGain(), sR = ctx.createGain(), side = ctx.createGain(); sL.gain.value = 0.5; sR.gain.value = -0.5;
+  split.connect(sL, 0); split.connect(sR, 1); sL.connect(side); sR.connect(side);
+  var shp = ctx.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 1500; side.connect(shp);
+  var wL = ctx.createGain(), wR = ctx.createGain(); wL.gain.value = 0; wR.gain.value = 0;
+  shp.connect(wL); shp.connect(wR); wL.connect(merge, 0, 0); wR.connect(merge, 0, 1);
+  var er = ctx.createGain(); er.gain.value = 0.5; split.connect(er, 0); split.connect(er, 1);
+  var ehp = ctx.createBiquadFilter(); ehp.type = 'highpass'; ehp.frequency.value = 250;
+  var elp = ctx.createBiquadFilter(); elp.type = 'lowpass'; elp.frequency.value = 5000;
+  er.connect(ehp); ehp.connect(elp);
+  var eL = ctx.createGain(), eR = ctx.createGain(); eL.gain.value = 0; eR.gain.value = 0;
+  [[0.0071, 0, 0.8], [0.0113, 1, 0.7], [0.0167, 0, 0.55], [0.0191, 1, 0.5], [0.0239, 0, 0.38], [0.0281, 1, 0.33]].forEach(function (t) {
+    var d = ctx.createDelay(0.05); d.delayTime.value = t[0]; var g = ctx.createGain(); g.gain.value = t[2];
+    elp.connect(d); d.connect(g); g.connect(t[1] ? eR : eL);
+  });
+  eL.connect(merge, 0, 0); eR.connect(merge, 0, 1);
+  return { input: input, output: out, set: function (sp, smooth) {
+    var a = sp && sp.on ? clamp(sp.amount, 0, 1) : 0, t = ctx.currentTime;
+    function set(param, v) { if (smooth) param.setTargetAtTime(v, t, 0.03); else param.setValueAtTime(v, t); }
+    var x = 0.45 * a;
+    set(xLR.gain, x); set(xRL.gain, x); set(dryL.gain, 1 - 0.28 * x); set(dryR.gain, 1 - 0.28 * x);
+    set(wL.gain, 0.32 * a); set(wR.gain, -0.32 * a);
+    set(eL.gain, 0.2 * a); set(eR.gain, 0.2 * a);
+  } };
+}
 function makeReverbIR(ctx) {
   var sr = ctx.sampleRate, len = Math.round(sr * 2.4), ir = ctx.createBuffer(2, len, sr), pre = Math.round(0.02 * sr);
   for (var c = 0; c < 2; c++) {
@@ -1372,10 +1449,10 @@ function buildGraph(ctx, nTracks, useWorklet, withMaster, active, noReverb) {
     n.fader.connect(n.pan); n.pan.connect(mIn); n.pan.connect(n.an); n.fader.connect(n.send); if (rev) n.send.connect(rev);
     g.tracks.push(n);
   }
-  var m = { in: mIn, eq: makeEqChain(ctx), gain: ctx.createGain(), lim: makeLim(ctx, useWorklet), an: ctx.createAnalyser() };
+  var m = { in: mIn, eq: makeEqChain(ctx), space: makeSpace(ctx), gain: ctx.createGain(), lim: makeLim(ctx, useWorklet), an: ctx.createAnalyser() };
   m.an.fftSize = 2048;
   if (withMaster) {
-    mIn.connect(m.eq.input); m.eq.output.connect(m.gain); m.gain.connect(m.lim.input); m.lim.output.connect(m.an); m.an.connect(ctx.destination);
+    mIn.connect(m.eq.input); m.eq.output.connect(m.space.input); m.space.output.connect(m.gain); m.gain.connect(m.lim.input); m.lim.output.connect(m.an); m.an.connect(ctx.destination);
   } else { mIn.connect(ctx.destination); }
   g.master = m;
   return g;
@@ -1407,6 +1484,7 @@ function applyToGraph(ctx, g, params, smooth) {
   });
   var mp = params.master;
   setEq(ctx, g.master.eq, mp, smooth);
+  g.master.space.set(mp.space, smooth);
   set(g.master.gain.gain, dbLin(mp.gainDb));
   g.master.lim.set(mp.limiter);
 }
@@ -1532,7 +1610,7 @@ function computePeaks(buf) {
 }
 
 /* ================= Analyse ================= */
-var WORKER_SRC = ANALYSIS_SRC + '\n;self.onmessage=function(e){try{var r=self.MixAnalysis.runAll(e.data.tracks,e.data.mix,function(p,l){self.postMessage({progress:p,label:l});});self.postMessage({result:r});}catch(err){self.postMessage({error:String(err&&err.message||err)});}};';
+var WORKER_SRC = ANALYSIS_SRC + '\n;self.onmessage=function(e){try{var r=self.MixAnalysis.runAll(e.data.tracks,e.data.mix,function(p,l){self.postMessage({progress:p,label:l});},e.data.opts);self.postMessage({result:r});}catch(err){self.postMessage({error:String(err&&err.message||err)});}};';
 var WORKER_URLS = [URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' })), 'data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(WORKER_SRC)))];
 var workerIdx = 0;
 function bufToTrack(name, buf) {
@@ -1567,7 +1645,7 @@ function runWorker(url, tracks, mix) {
       else if (e.data.error) { w.terminate(); reject(new Error(e.data.error)); }
     };
     w.onerror = function (e) { w.terminate(); reject(e); };
-    w.postMessage({ tracks: tracks, mix: mix }, transfer);
+    w.postMessage({ tracks: tracks, mix: mix, opts: { target: S.target } }, transfer);
   });
 }
 async function gatherInputs(processed) {
@@ -1590,7 +1668,7 @@ async function runAnalysis(processed) {
     inp = await gatherInputs(processed);
     busy(null, 0.5, 'Analyse');
     await sleep(30);
-    res = MA.runAll(inp.tracks, inp.mix);
+    res = MA.runAll(inp.tracks, inp.mix, null, { target: S.target });
   }
   S.metrics = { lufs: res.sum.lufs, peak: res.sum.peakDb };
   // On garde les conseils déjà traités, on ajoute les nouveaux
@@ -1598,11 +1676,13 @@ async function runAnalysis(processed) {
   var keepIds = keep.map(function (s) { return s.id; });
   var fresh = res.suggestions.filter(function (s) {
     if (keepIds.indexOf(s.id) >= 0) return false;
+    if (s.id === 'space' && S.committed.master.space.on) return false;
+    if (s.id === 'space' && processed && S.status.space === 'skipped') return false;
     // pas de conseil de sidechain si la piste en a déjà un, ou si le navigateur ne sait pas le faire
     if (s.actions.some(function (a) { return a.t === 'sidechain'; }) && (!S.worklet || (S.committed.tracks[s.target] && S.committed.tracks[s.target].sc.on))) return false;
     return true;
   });
-  fresh.forEach(function (s) { if (S.status[s.id] === 'skipped' && processed) delete S.status[s.id]; });
+  fresh.forEach(function (s) { if (S.status[s.id] === 'skipped' && processed && s.id !== 'space') delete S.status[s.id]; });
   S.sugg = keep.concat(fresh).sort(function (a, b) { return a.order - b.order; });
   S.stale = false;
   busy(null);
@@ -1640,6 +1720,78 @@ async function renderOffline(params, only, withMaster, tailSec, onProgress) {
   return await O.startRendering();
 }
 
+/* ================= Volume final mesuré ================= */
+function measureLufs(buf) {
+  var ks = []; for (var c = 0; c < Math.min(2, buf.numberOfChannels); c++) ks.push(MA.kFilter(buf.getChannelData(c), buf.sampleRate));
+  return MA.integratedLoudness(ks, buf.sampleRate);
+}
+function bufPeak(buf) { var pk = 0; for (var c = 0; c < buf.numberOfChannels; c++) { var d = buf.getChannelData(c); for (var i = 0; i < d.length; i++) { var v = d[i] < 0 ? -d[i] : d[i]; if (v > pk) pk = v; } } return pk > 0 ? 20 * Math.log10(pk) : -120; }
+// passe un mix déjà calculé dans le limiteur seul (rapide) avec un gain donné
+async function limitOnly(pre, gainDb, ceiling) {
+  var O = new OfflineAudioContext(2, pre.length, pre.sampleRate), useW = S.worklet ? await loadWorklet(O) : false;
+  var lim = makeLim(O, useW), s = O.createBufferSource(); s.buffer = pre;
+  s.connect(lim.input); lim.output.connect(O.destination); lim.set({ on: true, gainDb: gainDb, ceiling: ceiling }); s.start(0);
+  return await O.startRendering();
+}
+/* Trouve le gain du limiteur qui amène le mix exactement à la cible : on calcule le mix une fois sans limiteur,
+   puis on essaie quelques gains sur ce résultat en mesurant le volume perçu réel à chaque fois. */
+async function calibrateLoudness(params, target, onProg) {
+  var p = clone(params), ceiling = p.master.limiter.ceiling != null ? p.master.limiter.ceiling : -1;
+  p.master.limiter = { on: false, gainDb: 0, ceiling: ceiling };
+  var pre = await renderOffline(p, null, true, null, function (f) { onProg && onProg(f * 0.55, 'Calcul du mix'); });
+  var l0 = measureLufs(pre), g = clamp(target - l0, 0, 24), best = null;
+  for (var it = 0; it < 5; it++) {
+    onProg && onProg(0.55 + 0.45 * (it / 5), 'Mesure du volume (essai ' + (it + 1) + ')');
+    var out = await limitOnly(pre, g, ceiling), l = measureLufs(out);
+    if (!best || Math.abs(l - target) < Math.abs(best.l - target)) best = { g: g, l: l };
+    if (Math.abs(l - target) < 0.25 || (g >= 24 && l < target)) break;
+    // le limiteur « mange » une partie du gain : on corrige un peu plus que l'écart mesuré
+    g = clamp(g + (target - l) * 1.15, 0, 24);
+  }
+  return { gainDb: r1(best.g), lufs: best.l, before: l0, limited: best.g > 0 };
+}
+async function calibrateStep(s) {
+  if (S.calibrating) return;
+  S.calibrating = true; pause();
+  busy('Réglage du volume final', 0, 'Calcul du mix');
+  try {
+    var r = await calibrateLoudness(S.committed, S.target, function (f, d) { busy(null, f, d); });
+    var a = s.actions[0]; a.gainDb = r.gainDb; s.amountBase = r.gainDb;
+    s.short = 'Mesuré sur ton mix complet : il est à ' + fr(r.before) + ' LUFS. Pour atteindre la cible « ' + targetLabel(S.target) + ' » (' + S.target + ' LUFS), le limiteur doit monter le son de ' + fr(r.gainDb) + ' dB.';
+    s.fl = 'Sur le master, ajoute Fruity Limiter en dernier : plafond (Ceil) à -1 dB, Gain à +' + fr(r.gainDb) + ' dB. Vérifie à l\'oreille qu\'il n\'y a pas de distorsion.';
+    s.calibrated = S.target;
+  } catch (e) { toast('Mesure impossible : ' + (e && e.message || e)); s.calibrated = S.target; }
+  busy(null); S.calibrating = false;
+  if (S.previewFor === s.id) { S.previewFor = null; }
+  render();
+}
+// depuis l'éditeur du master : règle directement le limiteur
+async function autoLoudness() {
+  if (S.calibrating) return;
+  S.calibrating = true; pause();
+  busy('Réglage du volume final', 0, 'Calcul du mix');
+  try {
+    var r = await calibrateLoudness(S.committed, S.target, function (f, d) { busy(null, f, d); });
+    pushHistory();
+    S.committed.master.limiter = { on: true, gainDb: r.gainDb, ceiling: S.committed.master.limiter.ceiling != null ? S.committed.master.limiter.ceiling : -1 };
+    S.metrics = { lufs: r.lufs, peak: S.committed.master.limiter.ceiling };
+    S.stale = false; refreshAudio();
+    toast('Volume réglé : ' + fr(r.lufs) + ' LUFS (limiteur +' + fr(r.gainDb) + ' dB)');
+  } catch (e) { toast('Mesure impossible : ' + (e && e.message || e)); }
+  busy(null); S.calibrating = false;
+  if (!$('editor').hidden) openEditor(-1, 'vol'); else render();
+}
+function targetSeg(id) {
+  return '<div class="tseg" role="group" aria-label="Volume visé" id="' + id + '">' + TARGETS.map(function (t) {
+    return '<button data-target="' + t.v + '" aria-pressed="' + (S.target === t.v) + '"><b>' + t.l + '</b><small>' + t.v + ' LUFS · ' + t.h + '</small></button>';
+  }).join('') + '</div>';
+}
+function bindTargetSeg(id, after) {
+  document.querySelectorAll('#' + id + ' [data-target]').forEach(function (b) {
+    b.onclick = function () { S.target = +b.dataset.target; saveTarget(S.target); after(); };
+  });
+}
+
 /* ================= Conseils ================= */
 function trackName(i) { return i < 0 ? 'Master' : (S.tracks[i] ? S.tracks[i].label : '?'); }
 function setBand(p, band) {
@@ -1667,6 +1819,7 @@ function applySugg(params, s, k) {
       case 'masterEq': setBand(m, { id: id, type: a.type, freq: a.freq, q: a.q, db: r1(a.db * k) }); break;
       case 'masterHpf': m.hpf = k < 0.03 ? 0 : Math.round(a.freq * k); break;
       case 'masterGain': m.gainDb = r1(m.gainDb + a.db * k); break;
+      case 'space': m.space = { on: k >= 0.03, amount: clamp(r1(a.amount * k * 100) / 100, 0, 1) }; break;
       case 'sidechain': tp.sc = k < 0.03 ? Object.assign(tp.sc, { on: false }) : { on: true, source: a.source, depth: r1(a.depth * k), sens: a.sens, attack: a.attack, release: a.release }; break;
     }
   });
@@ -1699,6 +1852,7 @@ function changeList(s, before, after) {
       case 'masterEq': out.push(['Master · EQ à ' + fmtHz(a.freq), fmtDb(band(after.master))]); break;
       case 'masterHpf': out.push(['Master · coupe-bas', after.master.hpf ? 'sous ' + fmtHz(after.master.hpf) : 'désactivé']); break;
       case 'masterGain': out.push(['Master · volume', fmtDb(after.master.gainDb)]); break;
+      case 'space': out.push(['Master · espace', after.master.space.on ? 'intensité ' + Math.round(after.master.space.amount * 100) + ' %' : 'désactivé']); break;
       case 'sidechain': out.push([nm + ' · sidechain déclenché par ' + trackName(a.source), ta.sc.on ? 'baisse de ' + fr(ta.sc.depth) + ' dB, ' + Math.round(ta.sc.release * 1000) + ' ms' : 'désactivé']); break;
     }
   });
@@ -1889,6 +2043,7 @@ function renderGuided() {
   var prog = '<div class="progress"><div class="lbl"><span>' + (s ? 'Étape <b>' + (doneN + 1) + ' sur ' + list.length + '</b> · dans l\'ordre d\'un vrai mixage' : '<b>Tous les conseils sont traités</b>') + '</span><span>Score du mix <b class="num" style="color:var(--accent)">' + S.scoreStart + ' → ' + currentScore() + '</b></span></div><div class="steps" aria-hidden="true">' + steps + '</div></div>';
   if (!s) { S.preview = null; S.previewFor = null; setLoop(null); root.innerHTML = prog + renderDone(); bindDone(); return; }
   if (S.previewFor !== s.id) enterStep(s);
+  if (s.id === 'loudness' && s.calibrated !== S.target && !S.calibrating) setTimeout(function () { calibrateStep(s); }, 0);
   var sev = SEV[s.severity];
   var focus = s.focus.filter(function (i) { return S.tracks[i]; }).slice(0, 4);
   var lanes = focus.map(function (i) { return '<div class="lane"><span style="color:' + S.tracks[i].color + '">' + esc(S.tracks[i].label) + '</span><canvas data-lane="' + i + '" aria-label="Forme d\'onde de ' + esc(S.tracks[i].label) + '"></canvas></div>'; }).join('');
@@ -1904,6 +2059,7 @@ function renderGuided() {
       '</div>' + lanes + '</div>' +
       '<div class="g-grid">' +
         '<div class="card"><div class="row-head"><h2>Ce que je propose</h2><span class="sub">appliqué en direct pendant l\'écoute</span></div>' +
+          (s.id === 'loudness' ? '<span class="sub">Volume visé</span>' + targetSeg('gTarget') : '') +
           (ct != null ? '<canvas class="curve" id="gCurve" role="img" aria-label="Courbe d\'égalisation : en pointillé avant, en couleur après"></canvas>' : '') +
           (scAction(s) ? '<canvas class="curve" id="gDuck" role="img" aria-label="Volume de la piste au fil de deux coups de kick"></canvas><span class="sub">Volume de ' + esc(trackName(s.target)) + ' pendant deux coups de ' + esc(trackName(scAction(s).source)) + '</span>' : '') +
           '<ul class="changes" id="gChanges"></ul>' +
@@ -1923,6 +2079,7 @@ function renderGuided() {
   };
   $('gSkip').onclick = function () { pushHistory(); S.status[s.id] = 'skipped'; S.preview = null; S.previewFor = null; refreshAudio(); renderGuided(); };
   $('gAll').onclick = function () { S.sel = s.id; setMode('overview'); };
+  if ($('gTarget')) bindTargetSeg('gTarget', function () { renderGuided(); });
   focus.forEach(function (i) {
     var cv = root.querySelector('canvas[data-lane="' + i + '"]');
     cv.onclick = function (e) { var r = cv.getBoundingClientRect(), z = laneRange(s); seek(z.a + (z.b - z.a) * (e.clientX - r.left) / r.width); };
@@ -2042,7 +2199,8 @@ function renderTips() {
   var updC = function (k) { var el = $('tChanges'); if (el) el.innerHTML = changeList(s, S.committed, applySugg(S.committed, s, k)).map(function (r) { return '<li><span>' + esc(r[0]) + '</span><span class="num">' + esc(r[1]) + '</span></li>'; }).join(''); };
   updC(k0);
   if ($('tAmount')) $('tAmount').oninput = function (e) { var k = +e.target.value; S.tipAmount = { id: s.id, k: k }; $('tAmountV').textContent = amountText(s, k); updC(k); };
-  if ($('tApply')) $('tApply').onclick = function () {
+  if ($('tApply')) $('tApply').onclick = async function () {
+    if (s.id === 'loudness' && s.calibrated !== S.target) { await calibrateStep(s); }
     var k = S.tipAmount && S.tipAmount.id === s.id ? S.tipAmount.k : 1;
     pushHistory(); S.committed = applySugg(S.committed, s, k); S.status[s.id] = 'applied'; S.ab = 'after'; markStale(); refreshAudio();
     toast('Appliqué : ' + s.title);
@@ -2072,7 +2230,7 @@ function renderConsole() {
   var m = S.committed.master;
   html += '<div class="strip master"><div class="nm"><i style="background:var(--fg)"></i><span>Master</span></div>' +
     '<canvas class="eqc" data-eqc="-1" role="button" tabindex="0" aria-label="Égaliseur du master, ouvrir les réglages"></canvas>' +
-    '<div class="chips"><button class="chip" data-lim="1" aria-pressed="' + m.limiter.on + '">Limiteur</button></div>' +
+    '<div class="chips"><button class="chip" data-lim="1" aria-pressed="' + m.limiter.on + '">Limiteur</button><button class="chip" data-space="1" aria-pressed="' + m.space.on + '">Espace</button></div>' +
     knob('limg', -1, 'Gain limiteur', 0, 18, 0.5, m.limiter.gainDb, '+' + fr(m.limiter.gainDb) + ' dB') +
     '<div class="fadwrap"><canvas data-meter="-1" aria-hidden="true"></canvas><input class="fader" type="range" min="-24" max="6" step="0.5" value="' + m.gainDb + '" data-fader="-1" id="faderM" aria-label="Volume du master"></div>' +
     '<div class="db num" id="fdb-1">' + fmtDb(m.gainDb) + '</div></div>';
@@ -2090,6 +2248,7 @@ function renderConsole() {
       edit(function (p) { p.tracks[i].sc.on = !p.tracks[i].sc.on; }, true); renderConsole(); requestAnimationFrame(drawOverviewWaves);
     };
   });
+  con.querySelectorAll('[data-space]').forEach(function (b) { b.onclick = function () { edit(function (p) { p.master.space.on = !p.master.space.on; }, true); b.setAttribute('aria-pressed', S.committed.master.space.on); }; });
   con.querySelectorAll('[data-lim]').forEach(function (b) { b.onclick = function () { edit(function (p) { p.master.limiter.on = !p.master.limiter.on; }, true); b.setAttribute('aria-pressed', S.committed.master.limiter.on); }; });
   con.querySelectorAll('input[data-fader]').forEach(function (inp) {
     bindLive(inp, function (v) { var i = +inp.dataset.fader; edit(function (p) { if (i < 0) p.master.gainDb = v; else p.tracks[i].gainDb = v; }); $('fdb' + i).textContent = fmtDb(v); });
@@ -2155,7 +2314,14 @@ function openEditor(i, focusSection) {
     '<canvas class="curve" id="edCurve" role="img" aria-label="Courbe d\'égalisation"></canvas>' +
     '<section><h3>Coupe-bas</h3><p class="hint">Enlève tout ce qui est sous cette fréquence. 0 = désactivé.</p>' + ctl('Fréquence', 'hpf', 0, 1000, 1, p.hpf ? Math.round(Math.log(p.hpf / 20) / Math.log(25) * 1000) : 0, p.hpf ? fmtHz(p.hpf) : 'désactivé') + '</section>' +
     '<section><h3>Égaliseur<button class="btn sm" id="edAdd"' + (p.eq.length >= MAX_BANDS ? ' disabled' : '') + '>Ajouter une bande</button></h3>' + (bands || '<p class="hint">Aucune bande pour l\'instant.</p>') + '</section>' +
-    (master ? '<section><h3>Limiteur<label class="switch"><input type="checkbox" id="edLimOn"' + (p.limiter.on ? ' checked' : '') + '> Activé</label></h3><p class="hint">Monte le volume final sans jamais dépasser le plafond. À régler en dernier.</p>' +
+    (master ? '<section id="edSpace"><h3>Espace (casque)<label class="switch"><input type="checkbox" id="edSpOn"' + (p.space.on ? ' checked' : '') + '> Activé</label></h3>' +
+      '<p class="hint">Au casque, le son sort de la tête et se place devant toi, comme avec des enceintes. Sur enceintes, la différence reste discrète.</p>' +
+      '<div class="presets" role="group" aria-label="Intensité de l\'espace"><button class="btn sm" data-sp="0.4"><b>Léger</b><small>à peine perceptible</small></button><button class="btn sm" data-sp="0.6"><b>Naturel</b><small>conseillé</small></button><button class="btn sm" data-sp="0.85"><b>Ample</b><small>plus de profondeur</small></button></div>' +
+      ctl('Intensité', 'spa', 0, 100, 1, Math.round(p.space.amount * 100), Math.round(p.space.amount * 100) + ' %') + '</section>' +
+      '<section id="edVol"><h3>Volume final</h3><p class="hint">Mixette calcule le mix complet et règle le limiteur pour atteindre exactement le volume choisi.</p>' + targetSeg('edTarget') +
+      '<button class="btn primary" id="edAuto">Régler le volume automatiquement</button>' +
+      (S.metrics ? '<p class="hint">Dernière mesure : ' + fr(S.metrics.lufs) + ' LUFS' + (S.stale ? ' (avant tes derniers changements)' : '') + '</p>' : '') + '</section>' +
+      '<section><h3>Limiteur<label class="switch"><input type="checkbox" id="edLimOn"' + (p.limiter.on ? ' checked' : '') + '> Activé</label></h3><p class="hint">Monte le volume final sans jamais dépasser le plafond. À régler en dernier.</p>' +
       ctl('Gain', 'lg', 0, 18, 0.5, p.limiter.gainDb, '+' + fr(p.limiter.gainDb) + ' dB') + ctl('Plafond', 'lc', -3, 0, 0.1, p.limiter.ceiling, fmtDb(p.limiter.ceiling)) + '</section>'
       : '<section><h3>Compresseur<label class="switch"><input type="checkbox" id="edCompOn"' + (p.comp.on ? ' checked' : '') + '> Activé</label></h3><p class="hint">Réduit les passages qui dépassent le seuil, pour un volume plus régulier.</p>' +
       ctl('Seuil', 'cth', -50, 0, 1, p.comp.threshold, p.comp.threshold + ' dB') + ctl('Ratio', 'cra', 1, 10, 0.1, p.comp.ratio, fr(p.comp.ratio) + ':1') +
@@ -2185,6 +2351,13 @@ function openEditor(i, focusSection) {
   ed.querySelectorAll('[data-bdel]').forEach(function (b) { b.onclick = function () { var j = +b.dataset.bdel; edit(function () { cur().eq.splice(j, 1); }, true); openEditor(i); }; });
   $('edAdd').onclick = function () { edit(function () { cur().eq.push({ id: 'm' + Date.now(), type: 'peaking', freq: 1000, q: 1, db: 0 }); }, true); openEditor(i); };
   if (master) {
+    $('edSpOn').onchange = function (e) { edit(function () { cur().space.on = e.target.checked; }, true); };
+    live('spa', function (pp, v) { pp.space.amount = v / 100; if (v > 0) { pp.space.on = true; $('edSpOn').checked = true; } }, function (v) { return Math.round(v) + ' %'; });
+    ed.querySelectorAll('[data-sp]').forEach(function (b) { b.onclick = function () { edit(function () { cur().space = { on: true, amount: +b.dataset.sp }; }, true); openEditor(-1, 'space'); }; });
+    bindTargetSeg('edTarget', function () { openEditor(-1, 'vol'); });
+    $('edAuto').onclick = autoLoudness;
+    if (focusSection === 'vol') $('edVol').scrollIntoView({ block: 'start' });
+    if (focusSection === 'space') $('edSpace').scrollIntoView({ block: 'start' });
     $('edLimOn').onchange = function (e) { edit(function () { cur().limiter.on = e.target.checked; }, true); };
     live('lg', function (pp, v) { pp.limiter.gainDb = v; }, function (v) { return '+' + fr(v) + ' dB'; });
     live('lc', function (pp, v) { pp.limiter.ceiling = v; }, fmtDb);
@@ -2464,6 +2637,8 @@ function sheetText() {
   if (m.hpf) ml.push('Coupe-bas : ' + fmtHz(m.hpf));
   m.eq.forEach(function (b) { ml.push('EQ ' + ({ peaking: 'cloche', lowshelf: 'plateau grave', highshelf: 'plateau aigu' }[b.type]) + ' : ' + fmtHz(b.freq) + ', ' + fmtDb(b.db)); });
   if (Math.abs(m.gainDb) >= 0.1) ml.push('Volume : ' + fmtDb(m.gainDb));
+  if (m.space.on) ml.push('Espace (casque) : ' + Math.round(m.space.amount * 100) + ' %. Pour s\'en approcher : Fruity Reeverb 2 en pièce très petite (Wet vers 8 %) et Fruity Stereo Shaper avec « L to R » et « R to L » vers 10 à 15 %');
+  if (m.limiter.on) ml.push('Volume visé : ' + targetLabel(S.target) + ' (' + S.target + ' LUFS)');
   if (m.limiter.on) ml.push('Fruity Limiter : Ceil ' + fmtDb(m.limiter.ceiling) + ', Gain +' + fr(m.limiter.gainDb) + ' dB (toujours en dernier)');
   L.push('', '— MASTER' + (ml.length ? '' : ' : rien à changer'));
   ml.forEach(function (l) { L.push('   · ' + l); });
